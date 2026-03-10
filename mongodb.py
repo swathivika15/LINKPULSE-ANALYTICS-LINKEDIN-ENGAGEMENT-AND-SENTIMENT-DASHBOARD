@@ -24,7 +24,15 @@ class MongoDB:
         """Establish connection to MongoDB Atlas with proper SSL settings"""
         try:
             # Get connection string from Streamlit secrets
-            uri = st.secrets["mongo"]["uri"]
+            try:
+                uri = st.secrets["mongo"]["uri"]
+                print("✅ Found MongoDB URI in secrets")
+            except Exception as e:
+                print(f"❌ Failed to get MongoDB URI from secrets: {e}")
+                st.error("MongoDB URI not found in secrets. Please check your Streamlit Cloud secrets configuration.")
+                self.client = None
+                self.db = None
+                return
             
             print("🔄 Attempting to connect to MongoDB...")
             
@@ -40,21 +48,23 @@ class MongoDB:
                         uri = f"mongodb+srv://{username}:{encoded_password}@{parts[1]}"
                         print("✅ Password encoded for special characters")
             
-            # Remove any existing SSL parameters and add correct ones
+            # Ensure SSL parameters
             if '?' in uri:
                 base_uri = uri.split('?')[0]
                 uri = f"{base_uri}?ssl=true&tls=true&tlsAllowInvalidCertificates=true&retryWrites=true&w=majority"
             else:
                 uri = f"{uri}?ssl=true&tls=true&tlsAllowInvalidCertificates=true&retryWrites=true&w=majority"
             
+            print("🔄 Connecting with SSL enabled...")
+            
             # Connect with extended timeouts and SSL options
             self.client = MongoClient(
                 uri,
-                serverSelectionTimeoutMS=60000,
-                connectTimeoutMS=60000,
-                socketTimeoutMS=60000,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
                 tls=True,
-                tlsAllowInvalidCertificates=True,  # Important for cloud deployments
+                tlsAllowInvalidCertificates=True,
                 retryWrites=True,
                 retryReads=True
             )
@@ -72,7 +82,15 @@ class MongoDB:
                 print(f"📋 Available collections: {collections}")
                 self.create_indexes()
                 self.ensure_demo_user()
+                print("✅ Database setup complete!")
             
+        except ConnectionFailure as e:
+            error_msg = f"❌ MongoDB Connection Failure: {e}"
+            st.error(error_msg)
+            print(error_msg)
+            print("💡 Check if your IP is whitelisted in MongoDB Atlas")
+            self.client = None
+            self.db = None
         except Exception as e:
             error_msg = f"❌ MongoDB Connection Error: {e}"
             st.error(error_msg)
