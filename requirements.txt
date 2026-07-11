@@ -5,3 +5,5 @@ plotly
 pymongo
 certifi
 python-dotenv
+openpyxl
+bcrypt
