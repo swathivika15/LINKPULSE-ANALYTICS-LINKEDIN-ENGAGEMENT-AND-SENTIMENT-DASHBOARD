@@ -1110,9 +1110,18 @@ SUMMARY STATISTICS
 Total Posts: {len(df_clean)}
 """
 
+                        # FIX: each block below now also checks
+                        # pd.api.types.is_numeric_dtype(...) before summing
+                        # and formatting with ":,.0f". Previously it only
+                        # checked that the column existed. If the detected
+                        # column wasn't actually numeric (conversion failed,
+                        # or a text column got matched by mistake), .sum()
+                        # on a text column returns a concatenated STRING,
+                        # and formatting a string with ":,.0f" crashes with
+                        # "Unknown format code 'f' for object of type 'str'".
                         if column_mapping.get('impressions'):
                             imp_col = column_mapping['impressions']
-                            if imp_col in df_clean.columns:
+                            if imp_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[imp_col]):
                                 report += f"\nImpressions:"
                                 report += f"\n  - Total: {df_clean[imp_col].sum():,.0f}"
                                 report += f"\n  - Average: {df_clean[imp_col].mean():,.0f}"
@@ -1120,21 +1129,21 @@ Total Posts: {len(df_clean)}
 
                         if column_mapping.get('likes'):
                             likes_col = column_mapping['likes']
-                            if likes_col in df_clean.columns:
+                            if likes_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[likes_col]):
                                 report += f"\n\nLikes:"
                                 report += f"\n  - Total: {df_clean[likes_col].sum():,.0f}"
                                 report += f"\n  - Average: {df_clean[likes_col].mean():,.0f}"
 
                         if column_mapping.get('comments'):
                             comm_col = column_mapping['comments']
-                            if comm_col in df_clean.columns:
+                            if comm_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[comm_col]):
                                 report += f"\n\nComments:"
                                 report += f"\n  - Total: {df_clean[comm_col].sum():,.0f}"
                                 report += f"\n  - Average: {df_clean[comm_col].mean():,.0f}"
 
                         if column_mapping.get('shares'):
                             share_col = column_mapping['shares']
-                            if share_col in df_clean.columns:
+                            if share_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[share_col]):
                                 report += f"\n\nShares:"
                                 report += f"\n  - Total: {df_clean[share_col].sum():,.0f}"
                                 report += f"\n  - Average: {df_clean[share_col].mean():,.0f}"
