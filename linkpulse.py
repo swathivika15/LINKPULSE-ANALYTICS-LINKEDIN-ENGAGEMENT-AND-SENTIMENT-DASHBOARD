@@ -1,60 +1,72 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
-import base64
+import html
+import re
 import time
 import warnings
-warnings.filterwarnings('ignore')
+from datetime import datetime
+from io import BytesIO, StringIO
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
 from mongodb import mongo_db
 
-# Page configuration - MUST BE THE FIRST STREAMLIT COMMAND
+warnings.filterwarnings("ignore")
+
 st.set_page_config(
     page_title="LINKPULSE ANALYTICS - LinkedIn Engagement Dashboard",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# FIX: mongodb.py no longer calls st.error() during import (that used to
-# happen before set_page_config() above, which Streamlit doesn't allow and
-# would crash the app). Now we safely surface any connection problem here,
-# after set_page_config() has already run.
+MAX_UPLOAD_SIZE_MB = 20
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+MAX_ROWS = 100_000
+
+MISSING_VALUES = ["", "none", "null", "nan", "na", "n/a", "-", "--", "not available"]
+NUMERIC_HINTS = [
+    "impression", "view", "reach", "like", "reaction", "comment", "reply",
+    "share", "repost", "click", "engagement", "follower", "profile",
+]
+TEXT_HINTS = [
+    "text", "content", "post", "message", "commentary", "url", "link",
+    "permalink", "caption", "description",
+]
+
+
 if not mongo_db.is_connected() and mongo_db.last_error:
     st.error(f"⚠️ Database connection issue: {mongo_db.last_error}")
 
-# Initialize ALL session state variables at the start
-def init_session_state():
-    """Initialize all session state variables"""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    if 'user_id' not in st.session_state:
-        st.session_state.user_id = None
-    if 'username' not in st.session_state:
-        st.session_state.username = None
-    if 'user_email' not in st.session_state:
-        st.session_state.user_email = None
-    if 'page' not in st.session_state:
-        st.session_state.page = "landing"
-    if 'dashboard_page' not in st.session_state:
-        st.session_state.dashboard_page = "home"
-    if 'session_token' not in st.session_state:
-        st.session_state.session_token = None
-    if 'current_data' not in st.session_state:
-        st.session_state.current_data = None
-    if 'cleaned_data' not in st.session_state:
-        st.session_state.cleaned_data = None
-    if 'analysis_history' not in st.session_state:
-        st.session_state.analysis_history = []
 
-# Initialize session state
+def safe_text(value):
+    return html.escape(str(value or ""))
+
+
+def init_session_state():
+    defaults = {
+        "authenticated": False,
+        "user_id": None,
+        "username": None,
+        "user_email": None,
+        "page": "landing",
+        "dashboard_page": "home",
+        "session_token": None,
+        "current_data": None,
+        "cleaned_data": None,
+        "analysis_history": [],
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
 init_session_state()
 
-# Custom CSS
-st.markdown("""
+st.markdown(
+    """
     <style>
     .main-header {
         font-size: 3rem;
@@ -104,16 +116,6 @@ st.markdown("""
         margin: 2rem auto;
         max-width: 400px;
     }
-    .landing-container {
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        color: white;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-    }
     .insight-card {
         background: white;
         padding: 1.5rem;
@@ -121,546 +123,448 @@ st.markdown("""
         box-shadow: 0 5px 20px rgba(0,0,0,0.05);
         margin: 1rem 0;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-    }
-    .metric-value {
-        font-size: 2rem;
-        font-weight: 700;
-    }
-    .metric-label {
-        font-size: 1rem;
-        opacity: 0.9;
-    }
-    .caution-message {
-        background: #fff3cd;
-        border: 1px solid #ffeeba;
-        color: #856404;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .landing-header {
-        font-size: 4rem;
-        font-weight: 800;
-        margin-bottom: 1rem;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-        color: white;
-    }
-    .landing-subheader {
-        font-size: 2rem;
-        margin-bottom: 2rem;
-        opacity: 0.9;
-        color: white;
-    }
-    .landing-description {
-        font-size: 1.2rem;
-        max-width: 800px;
-        text-align: center;
-        margin-bottom: 3rem;
-        line-height: 1.6;
-        opacity: 0.9;
-        color: white;
-    }
-    .feature-box {
-        background: rgba(255,255,255,0.1);
-        backdrop-filter: blur(10px);
-        padding: 2rem;
-        border-radius: 20px;
-        text-align: center;
-        margin: 1rem;
-        border: 1px solid rgba(255,255,255,0.2);
-        color: white;
-    }
-    .feature-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-    }
-    .nav-buttons {
-        position: absolute;
-        top: 2rem;
-        right: 2rem;
-        display: flex;
-        gap: 1rem;
-        z-index: 1000;
-    }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-# Check for saved session token (BEFORE any page rendering)
-# NOTE: st.session_state does not survive a real browser refresh/new tab —
-# it's tied to the live Streamlit connection, not a browser cookie. So this
-# "remember me" restore only helps within the same live session (e.g. after
-# an internal st.rerun()), not across actual page reloads. For true
-# persistence across browser restarts you'd need a cookie-based library
-# such as streamlit-cookies-controller to store/read the token client-side.
+
 if not st.session_state.authenticated and st.session_state.session_token:
     result = mongo_db.validate_session(st.session_state.session_token)
-    if result and result.get('success'):
+    if result and result.get("success"):
         st.session_state.authenticated = True
-        st.session_state.user_id = result.get('user_id')
-        st.session_state.username = result.get('username')
-        st.session_state.user_email = result.get('email')
+        st.session_state.user_id = result.get("user_id")
+        st.session_state.username = result.get("username")
+        st.session_state.user_email = result.get("email")
         st.session_state.page = "dashboard"
         st.rerun()
 
-# ============================================================================
-# AUTHENTICATION FUNCTIONS
-# ============================================================================
 
 def login(username, password, remember_me=False):
-    """Login user"""
     result = mongo_db.authenticate_user(username, password)
-
-    if result['success']:
+    if result.get("success"):
         st.session_state.authenticated = True
-        st.session_state.user_id = result['user']['id']
-        st.session_state.username = result['user']['username']
-        st.session_state.user_email = result['user']['email']
+        st.session_state.user_id = result["user"]["id"]
+        st.session_state.username = result["user"]["username"]
+        st.session_state.user_email = result["user"]["email"]
         st.session_state.page = "dashboard"
         st.session_state.dashboard_page = "home"
 
         if remember_me:
-            session_result = mongo_db.create_session(result['user']['id'])
-            if session_result['success']:
-                st.session_state.session_token = session_result['token']
-
+            session_result = mongo_db.create_session(result["user"]["id"])
+            if session_result.get("success"):
+                st.session_state.session_token = session_result["token"]
         return True
     return False
 
+
 def signup(username, password, email):
-    """Signup new user"""
     result = mongo_db.create_user(username, email, password)
-    if result['success']:
+    if result.get("success"):
         return True, "Account created successfully! Please login."
-    else:
-        return False, result['message']
+    return False, result.get("message", "Could not create account.")
+
 
 def logout():
-    """Logout user"""
     if st.session_state.session_token:
         mongo_db.delete_session(st.session_state.session_token)
 
-    # Clear all session state
-    for key in ['authenticated', 'user_id', 'username', 'user_email',
-                'page', 'dashboard_page', 'session_token', 'current_data',
-                'cleaned_data', 'analysis_history']:
-        if key in st.session_state:
-            if key == 'page':
-                st.session_state.page = "landing"
-            elif key == 'dashboard_page':
-                st.session_state.dashboard_page = "home"
-            elif key in ['authenticated']:
-                st.session_state.authenticated = False
-            else:
-                st.session_state[key] = None
-
+    for key in [
+        "authenticated", "user_id", "username", "user_email", "page",
+        "dashboard_page", "session_token", "current_data", "cleaned_data",
+        "analysis_history",
+    ]:
+        if key == "authenticated":
+            st.session_state[key] = False
+        elif key == "page":
+            st.session_state[key] = "landing"
+        elif key == "dashboard_page":
+            st.session_state[key] = "home"
+        else:
+            st.session_state[key] = None
     st.rerun()
 
-# ============================================================================
-# DATA PROCESSING FUNCTIONS
-# ============================================================================
 
-def clean_linkedin_data(df):
-    """Clean and preprocess LinkedIn exported data"""
-    df_clean = df.copy()
+def validate_uploaded_file(uploaded_file):
+    name = uploaded_file.name.lower()
+    if not name.endswith((".csv", ".xlsx", ".txt")):
+        raise ValueError("Only CSV, XLSX, and TXT files are supported.")
+    if uploaded_file.size > MAX_UPLOAD_SIZE_BYTES:
+        raise ValueError(f"File is too large. Please upload a file under {MAX_UPLOAD_SIZE_MB} MB.")
 
-    # Remove completely empty rows
-    df_clean = df_clean.dropna(how='all')
 
-    # Replace string 'None' with actual NaN
-    df_clean = df_clean.replace('None', np.nan)
-    df_clean = df_clean.replace('none', np.nan)
-    df_clean = df_clean.replace('NULL', np.nan)
-    df_clean = df_clean.replace('null', np.nan)
+def read_uploaded_dataset(uploaded_file):
+    validate_uploaded_file(uploaded_file)
+    filename = uploaded_file.name.lower()
 
-    # Convert numeric columns (handling commas and special characters)
-    for col in df_clean.columns:
-        if df_clean[col].isna().all():
-            continue
+    if filename.endswith(".csv"):
+        return pd.read_csv(uploaded_file, encoding_errors="replace")
+    if filename.endswith(".xlsx"):
+        return pd.read_excel(BytesIO(uploaded_file.getvalue()), engine="openpyxl")
 
+    raw_bytes = uploaded_file.getvalue()
+    for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
         try:
-            if df_clean[col].dtype == 'object':
-                # Clean the data
-                cleaned = df_clean[col].astype(str).str.replace(',', '', regex=False)
-                cleaned = cleaned.str.replace('$', '', regex=False)
-                cleaned = cleaned.str.replace('%', '', regex=False)
-                cleaned = cleaned.str.strip()
+            content = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("Could not decode the text file.")
 
-                # Convert to numeric, coerce errors to NaN
-                df_clean[col] = pd.to_numeric(cleaned, errors='coerce')
-        except Exception as e:
-            # FIX: was a bare `except: pass` which silently swallowed any
-            # error (including real bugs). Now at least logged for debugging.
-            print(f"⚠️ Could not convert column '{col}' to numeric: {e}")
+    return pd.read_csv(StringIO(content))
 
-    # Convert date columns
-    for col in df_clean.columns:
-        if any(keyword in col.lower() for keyword in ['date', 'time', 'published', 'created']):
-            try:
-                df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
-            except Exception as e:
-                print(f"⚠️ Could not convert column '{col}' to datetime: {e}")
 
-    return df_clean
+def validate_dataframe(df):
+    if df.empty:
+        raise ValueError("The uploaded file is empty.")
+    if len(df) > MAX_ROWS:
+        raise ValueError(f"Too many rows. Please upload up to {MAX_ROWS:,} rows.")
+    if len(df.columns) == 0:
+        raise ValueError("No columns were found in the uploaded file.")
+
 
 def identify_linkedin_columns(df):
-    """Identify important columns specifically for LinkedIn exports"""
     column_mapping = {
-        'date': None,
-        'post_url': None,
-        'post_text': None,
-        'impressions': None,
-        'reach': None,
-        'likes': None,
-        'comments': None,
-        'shares': None,
-        'reposts': None,
-        'followers_gained': None,
-        'profile_views': None
+        "date": None,
+        "post_url": None,
+        "post_text": None,
+        "impressions": None,
+        "reach": None,
+        "likes": None,
+        "comments": None,
+        "shares": None,
+        "reposts": None,
+        "followers_gained": None,
+        "profile_views": None,
     }
 
-    # LinkedIn specific column patterns
-    linkedin_patterns = {
-        'date': ['date', 'time', 'posted', 'published', 'created'],
-        'post_url': ['url', 'link', 'post url', 'permalink'],
-        'post_text': ['text', 'content', 'post', 'message', 'commentary', 'share-text'],
-        'impressions': ['impression', 'views', 'display'],
-        'reach': ['reach', 'unique', 'members reached'],
-        'likes': ['like', 'reaction', 'thumbs'],
-        'comments': ['comment', 'reply'],
-        'shares': ['share', 'repost'],
-        'reposts': ['repost', 'reshare'],
-        'followers_gained': ['follower', 'new follower', 'followers gained'],
-        'profile_views': ['profile', 'profile viewer']
+    patterns = {
+        "date": ["date", "time", "posted", "published", "created"],
+        "post_url": ["post url", "permalink", "url", "link"],
+        "post_text": ["post text", "commentary", "share text", "content", "message", "caption", "text"],
+        "impressions": ["impressions", "impression", "views", "display"],
+        "reach": ["reach", "unique viewers", "members reached"],
+        "likes": ["likes", "like", "reactions", "reaction"],
+        "comments": ["comments", "comment", "replies", "reply"],
+        "shares": ["shares", "share"],
+        "reposts": ["reposts", "repost", "reshare"],
+        "followers_gained": ["followers gained", "new followers", "follower"],
+        "profile_views": ["profile views", "profile viewers", "profile"],
     }
 
-    for col in df.columns:
-        col_lower = str(col).lower().strip()
+    normalized_cols = {
+        col: re.sub(r"[^a-z0-9]+", " ", str(col).lower()).strip()
+        for col in df.columns
+    }
 
-        for key, patterns in linkedin_patterns.items():
-            if column_mapping[key] is None:
-                for pattern in patterns:
-                    if pattern in col_lower:
-                        column_mapping[key] = col
-                        break
+    for metric, metric_patterns in patterns.items():
+        for pattern in metric_patterns:
+            pattern_norm = re.sub(r"[^a-z0-9]+", " ", pattern.lower()).strip()
+            for original_col, normalized_col in normalized_cols.items():
+                if pattern_norm in normalized_col:
+                    column_mapping[metric] = original_col
+                    break
+            if column_mapping[metric]:
+                break
+
+    if column_mapping["shares"] == column_mapping["reposts"]:
+        if column_mapping["shares"] and "repost" in str(column_mapping["shares"]).lower():
+            column_mapping["shares"] = None
 
     return column_mapping
 
+
+def clean_linkedin_data(df):
+    df_clean = df.copy()
+    df_clean.columns = [
+        re.sub(r"\s+", " ", str(col).strip()).replace("\ufeff", "")
+        for col in df_clean.columns
+    ]
+    df_clean = df_clean.dropna(how="all").drop_duplicates()
+
+    for col in df_clean.columns:
+        if df_clean[col].dtype == "object":
+            df_clean[col] = df_clean[col].astype(str).str.strip()
+            df_clean[col] = df_clean[col].replace(
+                {value: np.nan for value in MISSING_VALUES},
+                regex=False,
+            )
+
+    column_mapping = identify_linkedin_columns(df_clean)
+    text_columns = {
+        col for col in [column_mapping.get("post_text"), column_mapping.get("post_url")]
+        if col
+    }
+
+    for col in df_clean.columns:
+        col_lower = str(col).lower()
+        if col in text_columns or any(hint in col_lower for hint in TEXT_HINTS):
+            continue
+
+        likely_numeric = any(hint in col_lower for hint in NUMERIC_HINTS)
+        if likely_numeric or df_clean[col].dtype == "object":
+            cleaned = (
+                df_clean[col]
+                .astype(str)
+                .str.replace(",", "", regex=False)
+                .str.replace("%", "", regex=False)
+                .str.replace("$", "", regex=False)
+                .str.replace("₹", "", regex=False)
+                .str.replace("+", "", regex=False)
+                .str.strip()
+            )
+            numeric = pd.to_numeric(cleaned, errors="coerce")
+            if numeric.notna().mean() >= 0.65:
+                df_clean[col] = numeric
+
+    for col in df_clean.columns:
+        col_lower = str(col).lower()
+        if any(keyword in col_lower for keyword in ["date", "time", "posted", "published", "created"]):
+            parsed = pd.to_datetime(df_clean[col], errors="coerce")
+            if parsed.notna().mean() >= 0.5:
+                df_clean[col] = parsed
+
+    return df_clean
+
+
+def get_numeric_series(df, column_mapping, key):
+    col_name = column_mapping.get(key)
+    if col_name and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
+        return df[col_name].dropna()
+    return None
+
+
 def generate_visualizations(df, column_mapping):
-    """Generate multiple interactive visualizations using Plotly"""
     visualizations = {}
+    chart_palette = ["#2563eb", "#7c3aed", "#dc2626", "#16a34a", "#ea580c"]
 
-    # Helper function to safely get column data
-    def get_column_data(col_key):
-        col_name = column_mapping.get(col_key)
-        if col_name and col_name in df.columns:
-            if pd.api.types.is_numeric_dtype(df[col_name]):
-                return df[col_name].dropna()
-        return None
-
-    # 1. Impressions Distribution (Histogram)
-    # FIX: `A or B` on pandas Series raises
-    # "ValueError: The truth value of a Series is ambiguous" whenever A is a
-    # non-empty Series, because Python calls bool(A) to evaluate `or`. This
-    # crashed the Visualizations tab any time an impressions/reach column
-    # was successfully detected with data. Replaced with an explicit None
-    # check instead of relying on truthiness.
-    impressions_data = get_column_data('impressions')
+    impressions_data = get_numeric_series(df, column_mapping, "impressions")
     if impressions_data is None:
-        impressions_data = get_column_data('reach')
+        impressions_data = get_numeric_series(df, column_mapping, "reach")
 
-    if impressions_data is not None and len(impressions_data) > 0:
+    if impressions_data is not None and not impressions_data.empty:
         fig_imp = px.histogram(
             x=impressions_data,
-            title="📊 Impressions Distribution",
-            color_discrete_sequence=['#667eea'],
-            nbins=30,
-            labels={'x': 'Impressions', 'count': 'Frequency'}
+            title="Impressions Distribution",
+            color_discrete_sequence=[chart_palette[0]],
+            nbins=min(30, max(5, len(impressions_data) // 2)),
+            labels={"x": "Impressions", "count": "Posts"},
         )
-        fig_imp.update_layout(
-            showlegend=False,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            height=400,
-            title_font_size=16,
-            title_font_color='#333'
-        )
-        visualizations['impressions'] = fig_imp
+        fig_imp.update_layout(showlegend=False, height=400)
+        visualizations["impressions"] = fig_imp
 
-    # 2. Engagement Metrics Comparison (Box Plot)
     engagement_data = {}
-    for key in ['likes', 'comments', 'shares', 'reposts']:
-        data = get_column_data(key)
-        if data is not None and len(data) > 0:
-            engagement_data[key.replace('_', ' ').title()] = data
+    for key in ["likes", "comments", "shares", "reposts"]:
+        data = get_numeric_series(df, column_mapping, key)
+        if data is not None and not data.empty:
+            engagement_data[key.replace("_", " ").title()] = data
 
     if len(engagement_data) >= 2:
         fig_engage = go.Figure()
-        colors = ['#667eea', '#764ba2', '#ff6b6b', '#4CAF50']
-
         for i, (key, data) in enumerate(engagement_data.items()):
-            fig_engage.add_trace(go.Box(
-                y=data,
-                name=key,
-                marker_color=colors[i % len(colors)],
-                boxmean='sd'
-            ))
-
+            fig_engage.add_trace(
+                go.Box(y=data, name=key, marker_color=chart_palette[i % len(chart_palette)], boxmean="sd")
+            )
         fig_engage.update_layout(
-            title="📈 Engagement Metrics Distribution",
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
+            title="Engagement Metrics Distribution",
             height=400,
             yaxis_title="Count",
-            title_font_size=16,
-            title_font_color='#333',
-            showlegend=False
+            showlegend=False,
         )
-        visualizations['engagement'] = fig_engage
+        visualizations["engagement"] = fig_engage
 
-    # 3. Time Series Analysis (Line Chart)
-    date_col = column_mapping.get('date')
-    if date_col is not None and date_col in df.columns:
-        try:
-            df_time = df.copy()
-            df_time[date_col] = pd.to_datetime(df_time[date_col], errors='coerce')
-            df_time = df_time.dropna(subset=[date_col]).sort_values(date_col)
+    date_col = column_mapping.get("date")
+    if date_col and date_col in df.columns:
+        df_time = df.copy()
+        df_time[date_col] = pd.to_datetime(df_time[date_col], errors="coerce")
+        df_time = df_time.dropna(subset=[date_col]).sort_values(date_col)
 
-            if len(df_time) > 0:
-                fig_time = go.Figure()
+        metrics = []
+        for key in ["impressions", "reach", "likes", "comments", "shares"]:
+            col_name = column_mapping.get(key)
+            if col_name and col_name in df_time.columns and pd.api.types.is_numeric_dtype(df_time[col_name]):
+                metrics.append((key.replace("_", " ").title(), col_name))
 
-                metrics = []
-                for key in ['impressions', 'likes', 'comments', 'shares']:
-                    col_name = column_mapping.get(key)
-                    if col_name is not None and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
-                        metrics.append((key.replace('_', ' ').title(), col_name))
-
-                colors = ['#667eea', '#764ba2', '#ff6b6b', '#4CAF50']
-                for i, (key, col_name) in enumerate(metrics[:4]):
-                    fig_time.add_trace(go.Scatter(
+        if not df_time.empty and metrics:
+            fig_time = go.Figure()
+            for i, (key, col_name) in enumerate(metrics[:5]):
+                fig_time.add_trace(
+                    go.Scatter(
                         x=df_time[date_col],
                         y=df_time[col_name],
                         name=key,
-                        line=dict(color=colors[i % len(colors)], width=2),
-                        mode='lines+markers',
-                        marker=dict(size=6)
-                    ))
-
-                fig_time.update_layout(
-                    title="📅 Performance Over Time",
-                    xaxis_title="Date",
-                    yaxis_title="Count",
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    hovermode='x unified',
-                    height=400,
-                    title_font_size=16,
-                    title_font_color='#333',
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
+                        mode="lines+markers",
+                        line=dict(color=chart_palette[i % len(chart_palette)], width=2),
                     )
                 )
-                visualizations['timeseries'] = fig_time
-        except Exception as e:
-            print(f"Time series error: {e}")
+            fig_time.update_layout(
+                title="Performance Over Time",
+                xaxis_title="Date",
+                yaxis_title="Count",
+                hovermode="x unified",
+                height=420,
+            )
+            visualizations["timeseries"] = fig_time
 
-    # 4. Correlation Heatmap
     numeric_cols = []
-    for key in ['impressions', 'reach', 'likes', 'comments', 'shares', 'reposts']:
+    for key in ["impressions", "reach", "likes", "comments", "shares", "reposts"]:
         col_name = column_mapping.get(key)
-        if col_name is not None and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
+        if col_name and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
             numeric_cols.append(col_name)
 
     if len(numeric_cols) >= 2:
-        try:
-            corr_matrix = df[numeric_cols].corr()
+        corr_matrix = df[numeric_cols].corr()
+        if not corr_matrix.isna().all().all():
             fig_corr = px.imshow(
                 corr_matrix,
-                title="🔗 Correlation Heatmap",
-                color_continuous_scale='Viridis',
-                aspect='auto',
-                height=400,
-                labels=dict(x="Metrics", y="Metrics", color="Correlation")
+                title="Metric Correlation Heatmap",
+                color_continuous_scale="RdBu",
+                zmin=-1,
+                zmax=1,
+                aspect="auto",
+                height=420,
             )
-            fig_corr.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                title_font_size=16,
-                title_font_color='#333'
-            )
-            visualizations['correlation'] = fig_corr
-        except Exception as e:
-            print(f"Heatmap error: {e}")
+            visualizations["correlation"] = fig_corr
 
-    # 5. Top Posts (Bar Chart)
     metric_col = None
-    for key in ['impressions', 'reach', 'likes']:
+    for key in ["impressions", "reach", "likes"]:
         col_name = column_mapping.get(key)
-        if col_name is not None and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
+        if col_name and col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
             metric_col = col_name
             break
 
-    text_col = column_mapping.get('post_text') or column_mapping.get('post_url')
-
-    if metric_col is not None and text_col is not None and text_col in df.columns:
-        try:
-            # Get top 10 posts (drop rows with no metric value first so
-            # nlargest doesn't return NaN-padded rows)
-            df_valid = df.dropna(subset=[metric_col])
-            df_sorted = df_valid.nlargest(10, metric_col)[[text_col, metric_col]]
-
-            # Create labels
-            labels = []
-            for idx, row in df_sorted.iterrows():
-                text = str(row[text_col]) if pd.notna(row[text_col]) else "(no text)"
-                label = text[:40] + '...' if len(text) > 40 else text
-                labels.append(label)
-
-            fig_top = go.Figure(data=[
-                go.Bar(
-                    x=df_sorted[metric_col],
-                    y=labels,
-                    orientation='h',
-                    marker_color='#667eea',
-                    text=df_sorted[metric_col],
-                    textposition='outside'
-                )
-            ])
-            fig_top.update_layout(
-                title="🏆 Top 10 Performing Posts",
-                xaxis_title=metric_col.replace('_', ' ').title(),
-                yaxis_title="Post Preview",
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                height=400,
-                title_font_size=16,
-                title_font_color='#333',
-                yaxis=dict(autorange="reversed")
+    text_col = column_mapping.get("post_text") or column_mapping.get("post_url")
+    if metric_col and text_col and text_col in df.columns:
+        df_valid = df.dropna(subset=[metric_col])
+        if not df_valid.empty:
+            df_sorted = df_valid.nlargest(min(10, len(df_valid)), metric_col)[[text_col, metric_col]]
+            labels = [
+                (str(value)[:55] + "...") if len(str(value)) > 55 else str(value)
+                for value in df_sorted[text_col].fillna("(no text)")
+            ]
+            fig_top = go.Figure(
+                data=[
+                    go.Bar(
+                        x=df_sorted[metric_col],
+                        y=labels,
+                        orientation="h",
+                        marker_color=chart_palette[0],
+                        text=df_sorted[metric_col],
+                        textposition="outside",
+                    )
+                ]
             )
-            visualizations['top_posts'] = fig_top
-        except Exception as e:
-            print(f"Top posts error: {e}")
+            fig_top.update_layout(
+                title="Top Performing Posts",
+                xaxis_title=str(metric_col).replace("_", " ").title(),
+                yaxis_title="Post Preview",
+                height=450,
+                yaxis=dict(autorange="reversed"),
+            )
+            visualizations["top_posts"] = fig_top
 
-    # 6. Pie Chart for Engagement Distribution
     total_engagement = {}
-    for key in ['likes', 'comments', 'shares']:
-        data = get_column_data(key)
-        if data is not None and len(data) > 0:
+    for key in ["likes", "comments", "shares"]:
+        data = get_numeric_series(df, column_mapping, key)
+        if data is not None and data.sum() > 0:
             total_engagement[key.title()] = data.sum()
 
     if len(total_engagement) >= 2:
         fig_pie = px.pie(
             values=list(total_engagement.values()),
             names=list(total_engagement.keys()),
-            title="🥧 Engagement Distribution",
-            color_discrete_sequence=['#667eea', '#764ba2', '#ff6b6b']
+            title="Engagement Distribution",
+            color_discrete_sequence=chart_palette,
         )
-        fig_pie.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            height=400,
-            title_font_size=16,
-            title_font_color='#333'
-        )
-        visualizations['pie'] = fig_pie
+        fig_pie.update_layout(height=400)
+        visualizations["pie"] = fig_pie
 
     return visualizations
 
-# ============================================================================
-# PAGE FUNCTIONS
-# ============================================================================
+
+def build_report(uploaded_file, df_clean, column_mapping):
+    report = f"""LINKPULSE ANALYTICS REPORT
+==========================
+File: {uploaded_file.name}
+Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+User: {st.session_state.username}
+
+SUMMARY STATISTICS
+------------------
+Total Posts: {len(df_clean)}
+Columns: {len(df_clean.columns)}
+"""
+
+    for key in ["impressions", "reach", "likes", "comments", "shares", "reposts"]:
+        col = column_mapping.get(key)
+        if col and col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[col]):
+            report += f"""
+
+{key.replace("_", " ").title()}:
+  - Total: {df_clean[col].sum():,.0f}
+  - Average: {df_clean[col].mean():,.2f}
+  - Maximum: {df_clean[col].max():,.0f}
+"""
+
+    report += "\n=========================="
+    return report
+
+
 def show_landing_page():
-    """Landing page with full description and features"""
-
-    # Navigation buttons
     col1, col2, col3 = st.columns([3, 2, 2])
-
     with col2:
         if st.button("🔑 Login", use_container_width=True):
             st.session_state.page = "login"
             st.rerun()
-
     with col3:
         if st.button("📝 Sign Up", use_container_width=True):
             st.session_state.page = "signup"
             st.rerun()
 
-    # Header
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem;">
-        <h1 style="font-size: 4rem; color: #667eea;">📊 LINKPULSE ANALYTICS</h1>
-        <h2 style="font-size: 2rem; color: #666;">LINKEDIN ENGAGEMENT AND SENTIMENT DASHBOARD</h2>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 1rem;">
+            <h1 style="font-size: 4rem; color: #667eea;">📊 LINKPULSE ANALYTICS</h1>
+            <h2 style="font-size: 2rem; color: #666;">LINKEDIN ENGAGEMENT AND SENTIMENT DASHBOARD</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div style="text-align: center; max-width: 800px; margin: 0 auto; padding: 1rem;">
+            <p style="font-size: 1.2rem; line-height: 1.6; color: #444;">
+            Transform your LinkedIn engagement data into actionable insights. Upload your datasets and get instant
+            visual analytics on impressions, likes, comments, shares, and performance trends.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # Description
-    st.markdown("""
-    <div style="text-align: center; max-width: 800px; margin: 0 auto; padding: 1rem;">
-        <p style="font-size: 1.2rem; line-height: 1.6; color: #444;">
-        Transform your LinkedIn engagement data into actionable insights. Upload your datasets and get instant
-        visual analytics on impressions, likes, comments, shares, and sentiment analysis to optimize your
-        content strategy. This powerful dashboard helps you understand post performance and make data-driven
-        decisions to improve your LinkedIn engagement strategy.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Feature boxes using columns
     st.markdown("---")
     st.markdown("<h3 style='text-align: center;'>✨ Key Features</h3>", unsafe_allow_html=True)
-
     col1, col2, col3 = st.columns(3)
-
     with col1:
-        st.markdown("""
-        <div style="text-align: center; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); height: 100%;">
-            <h1 style="font-size: 3rem; margin: 0;">📈</h1>
-            <h4>Real-time Analytics</h4>
-            <p style="color: #666;">Track your LinkedIn performance metrics in real-time with interactive visualizations</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            '<div class="insight-card"><h3>📈 Analytics</h3><p>Interactive charts for performance and engagement.</p></div>',
+            unsafe_allow_html=True,
+        )
     with col2:
-        st.markdown("""
-        <div style="text-align: center; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); height: 100%;">
-            <h1 style="font-size: 3rem; margin: 0;">😊</h1>
-            <h4>Sentiment Analysis</h4>
-            <p style="color: #666;">Powered analysis of comments to understand audience sentiment</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            '<div class="insight-card"><h3>🧹 Data Cleaning</h3><p>Safer cleaning that preserves post text and URLs.</p></div>',
+            unsafe_allow_html=True,
+        )
     with col3:
-        st.markdown("""
-        <div style="text-align: center; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); height: 100%;">
-            <h1 style="font-size: 3rem; margin: 0;">📑</h1>
-            <h4>PDF Reports</h4>
-            <p style="color: #666;">Generate comprehensive analysis reports with one click</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div class="insight-card"><h3>📑 Reports</h3><p>Download cleaned CSV files and summary reports.</p></div>',
+            unsafe_allow_html=True,
+        )
 
-    # Call to action
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; color: white;">
-        <h3>Ready to optimize your LinkedIn strategy?</h3>
-        <p>Join thousands of people who use LINKPULSE to grow their network</p>
-    </div>
-    """, unsafe_allow_html=True)
 
 def show_login_page():
-    """Login page"""
     col1, col2, col3 = st.columns([1, 2, 1])
-
     with col1:
         if st.button("← Back", key="login_back"):
             st.session_state.page = "landing"
@@ -669,15 +573,13 @@ def show_login_page():
     with col2:
         st.markdown('<div class="auth-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center;">🔐 Login</h2>', unsafe_allow_html=True)
-
         with st.form("login_form"):
             username = st.text_input("Username", placeholder="Enter username")
             password = st.text_input("Password", type="password", placeholder="Enter password")
             remember = st.checkbox("Remember me")
-
             if st.form_submit_button("Login", use_container_width=True):
                 if username and password:
-                    if login(username, password, remember):
+                    if login(username.strip(), password, remember):
                         st.success("✅ Login successful!")
                         time.sleep(1)
                         st.rerun()
@@ -687,19 +589,12 @@ def show_login_page():
                     st.warning("Please enter both username and password")
 
         st.markdown("---")
-        st.markdown("""
-        <div style="text-align:center; padding:1rem; background:#f5f7fb; border-radius:10px;">
-            <p><strong>Demo Credentials:</strong></p>
-            <p>Username: <code>demo</code> | Password: <code>demo123</code></p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info("Demo Credentials: username `demo`, password `demo123`")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def show_signup_page():
-    """Signup page"""
     col1, col2, col3 = st.columns([1, 2, 1])
-
     with col1:
         if st.button("← Back", key="signup_back"):
             st.session_state.page = "landing"
@@ -708,7 +603,6 @@ def show_signup_page():
     with col2:
         st.markdown('<div class="auth-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center;">✨ Sign Up</h2>', unsafe_allow_html=True)
-
         with st.form("signup_form"):
             username = st.text_input("Username", placeholder="Choose username")
             email = st.text_input("Email", placeholder="Enter email")
@@ -720,10 +614,12 @@ def show_signup_page():
                     st.warning("Please fill all fields")
                 elif password != confirm:
                     st.error("Passwords don't match")
-                elif len(password) < 6:
-                    st.error("Password must be at least 6 characters")
+                elif len(password) < 8:
+                    st.error("Password must be at least 8 characters")
+                elif "@" not in email or "." not in email:
+                    st.error("Please enter a valid email address")
                 else:
-                    success, msg = signup(username, password, email)
+                    success, msg = signup(username.strip(), password, email.strip())
                     if success:
                         st.success(msg)
                         time.sleep(1)
@@ -731,50 +627,41 @@ def show_signup_page():
                         st.rerun()
                     else:
                         st.error(msg)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def show_dashboard():
-    """Main dashboard with sidebar"""
-
-    # Sidebar - ALWAYS shown when authenticated
     with st.sidebar:
-        st.markdown(f"""
-        <div class="sidebar-header">
-            <h2>📊 LINKPULSE</h2>
-            <p>Analytics Dashboard</p>
-        </div>
-        <div class="user-info">
-            <strong>👤 {st.session_state.username}</strong><br>
-            <small>{st.session_state.user_email}</small>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            f"""
+            <div class="sidebar-header">
+                <h2>📊 LINKPULSE</h2>
+                <p>Analytics Dashboard</p>
+            </div>
+            <div class="user-info">
+                <strong>👤 {safe_text(st.session_state.username)}</strong><br>
+                <small>{safe_text(st.session_state.user_email)}</small>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown("---")
-
-        # Navigation
         if st.button("🏠 Home", key="nav_home", use_container_width=True):
             st.session_state.dashboard_page = "home"
             st.rerun()
-
         if st.button("👤 Profile", key="nav_profile", use_container_width=True):
             st.session_state.dashboard_page = "profile"
             st.rerun()
-
         if st.button("📊 Analyze", key="nav_analyze", use_container_width=True):
             st.session_state.dashboard_page = "analyze"
             st.rerun()
-
         if st.button("📜 History", key="nav_history", use_container_width=True):
             st.session_state.dashboard_page = "history"
             st.rerun()
-
         st.markdown("---")
-
         if st.button("🚪 Logout", key="nav_logout", use_container_width=True):
             logout()
 
-    # Main content based on selection
     if st.session_state.dashboard_page == "home":
         show_user_home()
     elif st.session_state.dashboard_page == "profile":
@@ -784,71 +671,65 @@ def show_dashboard():
     elif st.session_state.dashboard_page == "history":
         show_history_page()
 
+
 def show_user_home():
-    """User home page"""
     st.title("🏠 Welcome to LINKPULSE Analytics!")
-
     col1, col2 = st.columns(2)
-
     with col1:
-        st.markdown("""
-        <div class="insight-card">
-            <h3>📈 Getting Started</h3>
-            <p>Upload your LinkedIn engagement data to get started with analysis. We support:</p>
-            <ul>
-                <li>✅ CSV files (LinkedIn export format)</li>
-                <li>✅ Excel files (XLSX)</li>
-                <li>✅ Text files</li>
-            </ul>
-        </div>
-
-        <div class="insight-card">
-            <h3>🔍 What We Analyze</h3>
-            <ul>
-                <li>📊 Impressions and reach</li>
-                <li>❤️ Likes, reactions, and comments</li>
-                <li>🔄 Shares and reposts</li>
-                <li>📈 Engagement rates</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            """
+            <div class="insight-card">
+                <h3>📈 Getting Started</h3>
+                <p>Upload LinkedIn engagement exports in CSV, XLSX, or TXT format.</p>
+            </div>
+            <div class="insight-card">
+                <h3>🔍 What We Analyze</h3>
+                <ul>
+                    <li>Impressions and reach</li>
+                    <li>Likes, reactions, and comments</li>
+                    <li>Shares and reposts</li>
+                    <li>Performance trends over time</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     with col2:
-        st.markdown("""
-        <div class="insight-card">
-            <h3>💡 Pro Tips</h3>
-            <ul>
-                <li>🎯 Post consistently for better engagement</li>
-                <li>🖼️ Use visuals in your posts</li>
-                <li>💬 Engage with your commenters</li>
-                <li>📊 Track what content performs best</li>
-                <li>📥 Export your LinkedIn data as CSV</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            """
+            <div class="insight-card">
+                <h3>💡 Pro Tips</h3>
+                <ul>
+                    <li>Export clean post analytics from LinkedIn.</li>
+                    <li>Use consistent column names where possible.</li>
+                    <li>Review detected columns before trusting charts.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if st.session_state.current_data is not None:
-            st.info(f"📁 Current dataset: {len(st.session_state.current_data)} posts loaded")
+            st.info(f"📁 Current dataset: {len(st.session_state.current_data)} rows loaded")
         else:
-            st.info("🚀 Go to the **Analyze** page to upload your first dataset!")
+            st.info("🚀 Go to the Analyze page to upload your first dataset!")
+
 
 def show_profile_page():
-    """Profile page"""
     st.title("👤 Profile Settings")
-
     col1, col2 = st.columns([1, 2])
-
     with col1:
-        st.markdown(f"""
-        <div style="text-align:center; padding:2rem; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:15px; color:white;">
-            <div style="font-size:5rem;">👤</div>
-            <h3>{st.session_state.username}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(
+            f"""
+            <div style="text-align:center; padding:2rem; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:15px; color:white;">
+                <div style="font-size:5rem;">👤</div>
+                <h3>{safe_text(st.session_state.username)}</h3>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     with col2:
         with st.form("profile_form"):
-            email = st.text_input("Email", value=st.session_state.user_email)
+            email = st.text_input("Email", value=st.session_state.user_email or "")
             current = st.text_input("Current Password", type="password", placeholder="Enter to change password")
             new = st.text_input("New Password", type="password", placeholder="Leave blank to keep current")
             confirm = st.text_input("Confirm New Password", type="password")
@@ -857,364 +738,224 @@ def show_profile_page():
             if submitted:
                 if new and new != confirm:
                     st.error("New passwords don't match")
+                elif new and len(new) < 8:
+                    st.error("New password must be at least 8 characters")
                 elif new and not current:
                     st.error("Please enter current password")
                 else:
                     proceed = True
                     if new:
                         auth = mongo_db.authenticate_user(st.session_state.username, current)
-                        if not auth['success']:
+                        if not auth.get("success"):
                             st.error("Current password is incorrect")
                             proceed = False
 
-                    # FIX: previously used a bare `return` inside the form
-                    # handler when the current password check failed. That
-                    # works, but silently skips the rest of the function
-                    # with no further code after it in this branch anyway;
-                    # using a flag instead makes the control flow explicit
-                    # and easier to extend later.
                     if proceed:
                         result = mongo_db.update_user(
                             st.session_state.user_id,
-                            email if email != st.session_state.user_email else None,
-                            new if new else None
+                            email.strip() if email != st.session_state.user_email else None,
+                            new if new else None,
                         )
-
-                        if result['success']:
-                            st.session_state.user_email = email
+                        if result.get("success"):
+                            st.session_state.user_email = email.strip()
                             st.success("Profile updated!")
                         else:
-                            st.error(result['message'])
+                            st.error(result.get("message", "No changes made"))
+
 
 def show_analyze_page():
-    """Analyze page with full functionality and multiple visualizations"""
     st.title("📊 Analyze LinkedIn Data")
-
-    # Caution message about data format
-    st.markdown("""
-    <div style="background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 1rem; border-radius: 10px; margin-bottom: 2rem;">
-        <strong>⚠️ CAUTION:</strong> Your data should contain columns with these patterns:
-        <ul style="margin-top: 0.5rem; margin-bottom: 0;">
-            <li><strong>Date:</strong> 'date', 'time', 'posted', 'published'</li>
-            <li><strong>Impressions:</strong> 'impression', 'views', 'reach', 'members reached'</li>
-            <li><strong>Likes:</strong> 'like', 'reaction', 'thumbs'</li>
-            <li><strong>Comments:</strong> 'comment', 'reply'</li>
-            <li><strong>Shares:</strong> 'share', 'repost', 'reshare'</li>
-            <li><strong>Post Text:</strong> 'text', 'content', 'post', 'message'</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # File upload
-    uploaded_file = st.file_uploader(
-        "Upload your LinkedIn engagement data",
-        type=['csv', 'xlsx', 'txt'],
-        help="Upload CSV, Excel, or text files containing your LinkedIn post metrics",
-        key="file_uploader"
+    st.warning(
+        "Upload CSV, XLSX, or TXT files under 20 MB. For best results, include columns for date, "
+        "post text or URL, impressions/reach, likes, comments, and shares."
     )
 
-    if uploaded_file is not None:
-        try:
-            # Read file
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
-            elif uploaded_file.name.endswith('.xlsx'):
-                df = pd.read_excel(uploaded_file)  # requires openpyxl — see requirements.txt
-            else:
-                # FIX: LinkedIn export .txt files aren't always UTF-8 (Excel
-                # on Windows often saves as cp1252/latin-1). Reading with a
-                # hardcoded .decode('utf-8') crashed with
-                # UnicodeDecodeError on those files. Now we fall back.
-                raw_bytes = uploaded_file.read()
-                try:
-                    content = raw_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    content = raw_bytes.decode('latin-1')
-                from io import StringIO
-                df = pd.read_csv(StringIO(content))
+    uploaded_file = st.file_uploader(
+        "Upload your LinkedIn engagement data",
+        type=["csv", "xlsx", "txt"],
+        help="Upload CSV, Excel, or text files containing your LinkedIn post metrics",
+        key="file_uploader",
+    )
 
-            st.session_state.current_data = df
+    if uploaded_file is None:
+        return
 
-            # Clean data
-            with st.spinner('🧹 Cleaning and processing data...'):
-                df_clean = clean_linkedin_data(df)
-                st.session_state.cleaned_data = df_clean
+    try:
+        df = read_uploaded_dataset(uploaded_file)
+        validate_dataframe(df)
+        st.session_state.current_data = df
 
-            # Identify columns
-            column_mapping = identify_linkedin_columns(df_clean)
+        with st.spinner("🧹 Cleaning and processing data..."):
+            df_clean = clean_linkedin_data(df)
+            st.session_state.cleaned_data = df_clean
 
-            # Display results in tabs
-            tab1, tab2, tab3, tab4 = st.tabs(["📋 Raw Data", "✨ Cleaned Data", "🔍 Column Detection", "📈 Visualizations"])
+        column_mapping = identify_linkedin_columns(df_clean)
+        tab1, tab2, tab3, tab4 = st.tabs(["📋 Raw Data", "✨ Cleaned Data", "🔍 Column Detection", "📈 Visualizations"])
 
-            with tab1:
-                st.subheader("Raw Data Preview")
-                st.dataframe(df.head(100), use_container_width=True)
-                st.info(f"📊 Total rows: {len(df)} | Total columns: {len(df.columns)}")
+        with tab1:
+            st.subheader("Raw Data Preview")
+            st.dataframe(df.head(100), use_container_width=True)
+            st.info(f"📊 Total rows: {len(df)} | Total columns: {len(df.columns)}")
+            st.subheader("Column Names in Your File")
+            st.write(list(df.columns))
 
-                st.subheader("Column Names in Your File")
-                for col in df.columns:
-                    st.markdown(f"• {col}")
+        with tab2:
+            st.subheader("Cleaned Data Preview")
+            st.dataframe(df_clean.head(100), use_container_width=True)
+            st.info(f"📊 Rows after cleaning: {len(df_clean)} | Removed rows: {len(df) - len(df_clean)}")
+            st.success("✅ Removed blank rows, duplicate rows, and common missing-value markers")
+            st.success("✅ Converted metric-like columns while preserving post text and URLs")
+            st.success("✅ Processed date columns when enough values looked like dates")
 
-            with tab2:
-                st.subheader("Cleaned Data Preview")
-                st.dataframe(df_clean.head(100), use_container_width=True)
-                st.info(f"📊 Total rows after cleaning: {len(df_clean)}")
+        with tab3:
+            st.subheader("Detected LinkedIn Columns")
+            mapping_data = [
+                {
+                    "Metric": key.replace("_", " ").title(),
+                    "Status": "✅ Found" if value else "❌ Not found",
+                    "Detected Column": value if value else "-",
+                }
+                for key, value in column_mapping.items()
+            ]
+            st.dataframe(pd.DataFrame(mapping_data), use_container_width=True)
 
-                st.success("✅ Removed 'None' strings and empty values")
-                st.success("✅ Converted numeric columns (removed commas)")
-                st.success("✅ Processed date columns")
-
-            with tab3:
-                st.subheader("Detected LinkedIn Columns")
-
-                # Create mapping table
-                mapping_data = []
-                for key, value in column_mapping.items():
-                    status = "✅ Found" if value else "❌ Not found"
-                    mapping_data.append({
-                        "Metric": key.replace('_', ' ').title(),
-                        "Status": status,
-                        "Detected Column": value if value else "-"
-                    })
-
-                st.dataframe(pd.DataFrame(mapping_data), use_container_width=True)
-
-                # Numeric columns stats
-                st.subheader("Numeric Columns Statistics")
-                numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 0:
-                    stats_data = []
-                    for col in numeric_cols:
-                        stats_data.append({
+            st.subheader("Numeric Columns Statistics")
+            numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                stats_data = []
+                for col in numeric_cols:
+                    series = df_clean[col].dropna()
+                    if series.empty:
+                        continue
+                    stats_data.append(
+                        {
                             "Column": col,
-                            "Mean": f"{df_clean[col].mean():,.2f}",
-                            "Median": f"{df_clean[col].median():,.2f}",
-                            "Max": f"{df_clean[col].max():,.0f}",
-                            "Min": f"{df_clean[col].min():,.0f}",
-                            "Sum": f"{df_clean[col].sum():,.0f}"
-                        })
-                    st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
-                else:
-                    st.warning("No numeric columns found")
+                            "Mean": f"{series.mean():,.2f}",
+                            "Median": f"{series.median():,.2f}",
+                            "Max": f"{series.max():,.0f}",
+                            "Min": f"{series.min():,.0f}",
+                            "Sum": f"{series.sum():,.0f}",
+                        }
+                    )
+                st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+            else:
+                st.warning("No numeric columns found")
 
-                # Save to history button - KEPT HERE
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                with col2:
-                    if st.button("💾 Save to History", use_container_width=True, key="save_history_btn"):
-                        result = mongo_db.save_analysis(
-                            st.session_state.user_id,
-                            uploaded_file.name,
-                            len(df_clean),
-                            {k: v for k, v in column_mapping.items() if v},
-                            uploaded_file.getvalue()
-                        )
-                        if result.get('success'):
-                            st.success("✅ Analysis saved to history!")
-                        else:
-                            st.error("❌ Failed to save analysis")
+            st.markdown("---")
+            col1, col2, col3 = st.columns(3)
+            with col2:
+                if st.button("💾 Save to History", use_container_width=True, key="save_history_btn"):
+                    result = mongo_db.save_analysis(
+                        st.session_state.user_id,
+                        uploaded_file.name,
+                        len(df_clean),
+                        {k: v for k, v in column_mapping.items() if v},
+                        uploaded_file.getvalue(),
+                    )
+                    if result.get("success"):
+                        st.success("✅ Analysis saved to history!")
+                    else:
+                        st.error(result.get("message", "❌ Failed to save analysis"))
 
-            with tab4:
-                st.subheader("📈 Visualization Dashboard")
+        with tab4:
+            st.subheader("📈 Visualization Dashboard")
+            with st.spinner("🎨 Generating visualizations..."):
+                visualizations = generate_visualizations(df_clean, column_mapping)
 
-                # Generate visualizations
-                with st.spinner('🎨 Generating multiple visualizations...'):
-                    visualizations = generate_visualizations(df_clean, column_mapping)
+            if not visualizations:
+                st.warning("⚠️ Not enough detected numeric data to generate visualizations.")
+                return
 
-                if visualizations:
-                    st.success(f"✅ Generated {len(visualizations)} visualizations!")
+            st.success(f"✅ Generated {len(visualizations)} visualizations!")
+            viz_items = list(visualizations.items())
+            for i in range(0, len(viz_items), 2):
+                cols = st.columns(2)
+                with cols[0]:
+                    st.plotly_chart(viz_items[i][1], use_container_width=True)
+                if i + 1 < len(viz_items):
+                    with cols[1]:
+                        st.plotly_chart(viz_items[i + 1][1], use_container_width=True)
 
-                    # Display visualizations in a grid (2 per row)
-                    viz_items = list(visualizations.items())
+            st.markdown("---")
+            st.subheader("📊 Quick Statistics")
+            metric_cols = st.columns(4)
+            col_idx = 0
+            for key in ["impressions", "reach", "likes", "comments", "shares"]:
+                col = column_mapping.get(key)
+                if col and col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[col]):
+                    with metric_cols[col_idx % 4]:
+                        st.metric(f"Total {key.title()}", f"{df_clean[col].sum():,.0f}")
+                        st.metric(f"Avg {key.title()}", f"{df_clean[col].mean():,.0f}")
+                    col_idx += 1
 
-                    for i in range(0, len(viz_items), 2):
-                        cols = st.columns(2)
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 Download Cleaned Data (CSV)",
+                    data=df_clean.to_csv(index=False),
+                    file_name="cleaned_linkedin_data.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with col2:
+                st.download_button(
+                    label="📄 Download Summary Report (TXT)",
+                    data=build_report(uploaded_file, df_clean, column_mapping),
+                    file_name="linkedin_report.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
 
-                        # First chart
-                        with cols[0]:
-                            name, fig = viz_items[i]
-                            st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"❌ Error processing file: {e}")
 
-                        # Second chart (if exists)
-                        if i + 1 < len(viz_items):
-                            with cols[1]:
-                                name, fig = viz_items[i + 1]
-                                st.plotly_chart(fig, use_container_width=True)
-
-                    # Summary statistics
-                    st.markdown("---")
-                    st.subheader("📊 Quick Statistics")
-
-                    cols = st.columns(4)
-                    col_idx = 0
-
-                    # Impressions stats
-                    if column_mapping.get('impressions'):
-                        imp_col = column_mapping['impressions']
-                        if imp_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[imp_col]):
-                            with cols[col_idx % 4]:
-                                st.metric("Total Impressions", f"{df_clean[imp_col].sum():,.0f}")
-                                st.metric("Avg Impressions", f"{df_clean[imp_col].mean():,.0f}")
-                                col_idx += 1
-
-                    # Likes stats
-                    if column_mapping.get('likes'):
-                        likes_col = column_mapping['likes']
-                        if likes_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[likes_col]):
-                            with cols[col_idx % 4]:
-                                st.metric("Total Likes", f"{df_clean[likes_col].sum():,.0f}")
-                                st.metric("Avg Likes", f"{df_clean[likes_col].mean():,.0f}")
-                                col_idx += 1
-
-                    # Comments stats
-                    if column_mapping.get('comments'):
-                        comm_col = column_mapping['comments']
-                        if comm_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[comm_col]):
-                            with cols[col_idx % 4]:
-                                st.metric("Total Comments", f"{df_clean[comm_col].sum():,.0f}")
-                                st.metric("Avg Comments", f"{df_clean[comm_col].mean():,.0f}")
-                                col_idx += 1
-
-                    # Shares stats
-                    if column_mapping.get('shares'):
-                        share_col = column_mapping['shares']
-                        if share_col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[share_col]):
-                            with cols[col_idx % 4]:
-                                st.metric("Total Shares", f"{df_clean[share_col].sum():,.0f}")
-                                st.metric("Avg Shares", f"{df_clean[share_col].mean():,.0f}")
-                                col_idx += 1
-
-                    # Download options
-                    st.markdown("---")
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        csv = df_clean.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Cleaned Data (CSV)",
-                            data=csv,
-                            file_name="cleaned_linkedin_data.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-
-                    with col2:
-                        report = f"""LINKPULSE ANALYTICS REPORT
-==========================
-File: {uploaded_file.name}
-Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-User: {st.session_state.username}
-
-SUMMARY STATISTICS
------------------
-Total Posts: {len(df_clean)}
-"""
-
-                        if column_mapping.get('impressions'):
-                            imp_col = column_mapping['impressions']
-                            if imp_col in df_clean.columns:
-                                report += f"\nImpressions:"
-                                report += f"\n  - Total: {df_clean[imp_col].sum():,.0f}"
-                                report += f"\n  - Average: {df_clean[imp_col].mean():,.0f}"
-                                report += f"\n  - Maximum: {df_clean[imp_col].max():,.0f}"
-
-                        if column_mapping.get('likes'):
-                            likes_col = column_mapping['likes']
-                            if likes_col in df_clean.columns:
-                                report += f"\n\nLikes:"
-                                report += f"\n  - Total: {df_clean[likes_col].sum():,.0f}"
-                                report += f"\n  - Average: {df_clean[likes_col].mean():,.0f}"
-
-                        if column_mapping.get('comments'):
-                            comm_col = column_mapping['comments']
-                            if comm_col in df_clean.columns:
-                                report += f"\n\nComments:"
-                                report += f"\n  - Total: {df_clean[comm_col].sum():,.0f}"
-                                report += f"\n  - Average: {df_clean[comm_col].mean():,.0f}"
-
-                        if column_mapping.get('shares'):
-                            share_col = column_mapping['shares']
-                            if share_col in df_clean.columns:
-                                report += f"\n\nShares:"
-                                report += f"\n  - Total: {df_clean[share_col].sum():,.0f}"
-                                report += f"\n  - Average: {df_clean[share_col].mean():,.0f}"
-
-                        report += "\n\n=========================="
-
-                        # FIX: previously this whole block only ran (and the
-                        # download link only rendered) inside
-                        # `if st.button("Generate Summary Report")`, which
-                        # meant the link vanished on the very next Streamlit
-                        # rerun (e.g. clicking anything else). Switched to
-                        # st.download_button, which is Streamlit's built-in
-                        # widget for this and persists correctly + doesn't
-                        # need manual base64 encoding.
-                        st.download_button(
-                            label="📄 Download Summary Report (TXT)",
-                            data=report,
-                            file_name="linkedin_report.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                else:
-                    st.warning("⚠️ Not enough data to generate visualizations. Please check your data format.")
-
-        except Exception as e:
-            st.error(f"❌ Error processing file: {str(e)}")
 
 def show_history_page():
-    """History page showing all saved analyses"""
     st.title("📜 Analysis History")
-
-    # Get analyses from MongoDB
     analyses = mongo_db.get_user_analyses(st.session_state.user_id)
 
     if not analyses:
         st.info("📭 No analysis history yet. Go to the Analyze page and save some analyses!")
-    else:
-        st.success(f"✅ Found {len(analyses)} saved analyses")
+        return
 
-        for i, analysis in enumerate(analyses):
-            with st.container():
-                # Create a card-like container
-                st.markdown(f"""
-                <div style="background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 1rem;">
-                    <h4 style="margin: 0; color: #333;">📁 {analysis['filename']}</h4>
-                    <p style="color: #666; margin: 0.5rem 0;">
-                        🕒 {analysis.get('analysis_date', 'Unknown date')} |
-                        📊 {analysis.get('rows_analyzed', 0)} rows |
-                        📋 {len(analysis.get('detected_metrics', {}))} metrics detected
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
+    st.success(f"✅ Found {len(analyses)} saved analyses")
+    for analysis in analyses:
+        st.markdown(
+            f"""
+            <div style="background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 1rem;">
+                <h4 style="margin: 0; color: #333;">📁 {safe_text(analysis.get("filename", "Unknown file"))}</h4>
+                <p style="color: #666; margin: 0.5rem 0;">
+                    🕒 {safe_text(analysis.get("analysis_date", "Unknown date"))} |
+                    📊 {int(analysis.get("rows_analyzed", 0))} rows |
+                    📋 {len(analysis.get("detected_metrics", {}))} metrics detected
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if analysis.get("detected_metrics"):
+            with st.expander("View detected columns"):
+                metrics_data = [
+                    {"Metric": key, "Column": value}
+                    for key, value in analysis["detected_metrics"].items()
+                ]
+                st.dataframe(pd.DataFrame(metrics_data), use_container_width=True)
+        st.markdown("---")
 
-                # Show detected metrics if available
-                if analysis.get('detected_metrics'):
-                    with st.expander("View detected columns"):
-                        metrics_data = []
-                        for key, value in analysis['detected_metrics'].items():
-                            metrics_data.append({"Metric": key, "Column": value})
-                        st.dataframe(pd.DataFrame(metrics_data), use_container_width=True)
-
-                st.markdown("---")
-
-# ============================================================================
-# MAIN APP LOGIC
-# ============================================================================
 
 def main():
-    """Main routing function"""
     if st.session_state.authenticated:
         show_dashboard()
+    elif st.session_state.page == "landing":
+        show_landing_page()
+    elif st.session_state.page == "login":
+        show_login_page()
+    elif st.session_state.page == "signup":
+        show_signup_page()
     else:
-        if st.session_state.page == "landing":
-            show_landing_page()
-        elif st.session_state.page == "login":
-            show_login_page()
-        elif st.session_state.page == "signup":
-            show_signup_page()
-        else:
-            show_landing_page()
+        show_landing_page()
+
 
 if __name__ == "__main__":
     main()
