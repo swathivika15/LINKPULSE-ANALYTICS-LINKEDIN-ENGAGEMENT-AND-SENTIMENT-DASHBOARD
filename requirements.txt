@@ -1,9 +1,8 @@
 streamlit
 pandas
-numpy
+numpy==1.26.4
 plotly
 pymongo
 certifi
 python-dotenv
-openpyxl
 bcrypt
