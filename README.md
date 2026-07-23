@@ -196,14 +196,23 @@ get_analysis(analysis_id)
 text
 linkpulse-analytics/
 │
+
 ├── app.py                 # Main application
+
 ├── mongodb.py             # Database handler
+
 ├── requirements.txt       # Dependencies
+
 ├── README.md              # Documentation
+
 │
+
 ├── .streamlit/
+
 │   └── secrets.toml.example # Example secrets
+
 │
+
 └── .gitignore             # Git ignore rules
 
 🤝 Contributing
