@@ -157,19 +157,23 @@ Upload sample data to test features
 <img width="1919" height="854" alt="Screenshot 2026-03-11 093502" src="https://github.com/user-attachments/assets/1939a99d-31fa-4a54-a599-37a237105bc6" />
 
 
-3. Uploading Data
+2. Uploading Data
 text
 Supported Formats: .csv, .xlsx, .txt
 Maximum File Size: 200MB
 Recommended: LinkedIn post export CSV
+<img width="1919" height="850" alt="Screenshot 2026-03-11 093654" src="https://github.com/user-attachments/assets/c2e2f7a2-6276-4a33-af40-d47daa1a6d8e" />
+
 
 4. Analyzing Data
 Raw data preview shows original file
 Cleaned data shows processed version
 Column detection maps your columns
 Visualizations generate automatically
+<img width="1917" height="897" alt="Screenshot 2026-03-11 093922" src="https://github.com/user-attachments/assets/2cb45ee8-9f0e-4b0d-b82c-cdeed6c2b8a4" />
 
-4. Saving Results
+
+6. Saving Results
 Click "Save to History" in Analysis tab
 View all saved analyses in History tab
 Download cleaned data as CSV
