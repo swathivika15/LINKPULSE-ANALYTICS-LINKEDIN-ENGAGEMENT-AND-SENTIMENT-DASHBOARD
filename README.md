@@ -1,4 +1,4 @@
-# LINKPULSE-ANALYTICS-LINKEDIN-ENGAGEMENT-AND-SENTIMENT-DASHBOARD
+<img width="1919" height="854" alt="Screenshot 2026-03-11 093502" src="https://github.com/user-attachments/assets/afab806b-d585-4417-b9d9-f745681b253d" /># LINKPULSE-ANALYTICS-LINKEDIN-ENGAGEMENT-AND-SENTIMENT-DASHBOARD
 
 📋 **Table of Contents**
   Overview
@@ -154,8 +154,10 @@ Post Text: 'text', 'content', 'post', 'message'
 Sign up for a new account
 Use demo credentials to explore
 Upload sample data to test features
+<img width="1919" height="854" alt="Screenshot 2026-03-11 093502" src="https://github.com/user-attachments/assets/1939a99d-31fa-4a54-a599-37a237105bc6" />
 
-2. Uploading Data
+
+3. Uploading Data
 text
 Supported Formats: .csv, .xlsx, .txt
 Maximum File Size: 200MB
